@@ -1,42 +1,25 @@
-# app.py (修正後の完全版)
-
 import streamlit as st
 import pandas as pd
 import numpy as np
-from io import BytesIO
+import io
 
-# --- ページ設定とセッションステートの初期化 ---
-st.set_page_config(page_title="力量マップCSV生成ツール", layout="centered")
+# ページ設定
+st.set_page_config(
+    page_title="力量マップCSV生成ツール",
+    page_icon="📊",
+    layout="wide"
+)
+
+# タイトル
 st.title("📊 力量マップCSV生成ツール")
+st.markdown("---")
 
-# final_dfをセッションステートで初期化
-if 'final_df' not in st.session_state:
-    st.session_state['final_df'] = pd.DataFrame()
-
-
-# --- データ処理関数 (既存のロジックをそのまま移植) ---
-
-# 【重要修正点】列名から不要な空白を取り除き、処理の堅牢性を高める関数
-def clean_column_names(df):
-    """DataFrameの列名から前後の空白（全角/半角）を取り除く"""
-    df.columns = df.columns.str.strip()
-    return df
-
-# 【修正済み】split_competence_category: 列名の前後の空白を削除
+# -------------------------------
+# データ処理関数
+# -------------------------------
 def split_competence_category(df):
     """力量カテゴリーを「＞」で分割して20列に展開"""
-    
-    # 既存のロジックから、df['力量カテゴリー']の再代入を削除し、NaNを空文字列に変換する処理を簡略化
-    
-    # KeyError対策: まず列名のクリーニングを試みる
-    df = clean_column_names(df)
-    
-    # '力量カテゴリー'が存在するか確認（存在しない場合はエラーを出すが、列名クリーニングで大半は解決するはず）
-    if '力量カテゴリー' not in df.columns:
-        raise KeyError("アップロードされたCSVに '力量カテゴリー' という列が見つかりません。列名を正確に確認してください。")
-
-    # NaNを一時的に空文字列に変換してsplitを適用
-    split_data = df['力量カテゴリー'].astype(str).str.strip().str.split('＞', expand=True)
+    split_data = df['力量カテゴリー'].str.split('＞', expand=True)
 
     if split_data.shape[1] > 20:
         split_data = split_data.iloc[:, :20]
@@ -44,14 +27,12 @@ def split_competence_category(df):
     split_data = split_data.apply(lambda col: col.str.strip() if col.dtype == 'object' else col)
     split_data = split_data.replace('', np.nan)
 
-    # 20列に満たない場合、NaNで列を埋める
     for i in range(split_data.shape[1], 20):
         split_data[i] = np.nan
 
     split_data.columns = [f'力量カテゴリー名  ###[competence_category_name_{i}]###' for i in range(1, 21)]
 
-    # 力量カテゴリーのカラムが元のdfにあることを前提として、結合する
-    return pd.concat([df.reset_index(drop=True), split_data.reset_index(drop=True)], axis=1)
+    return pd.concat([df, split_data], axis=1)
 
 
 def build_category_path(df):
@@ -80,7 +61,7 @@ def expand_with_skill_codes(df_output, df_competence, item_type_name, skill_code
         for i in range(1, 21):
             old_col = f'力量カテゴリー名  ###[competence_category_name_{i}]###'
             new_col = f'力量コード（カテゴリ名）{i}  ###[item_code_{i:02d}]###'
-            category_row_dict[new_col] = comp_row.get(old_col, np.nan)
+            category_row_dict[new_col] = comp_row[old_col] if old_col in comp_row.index else np.nan
 
         results.append(category_row_dict)
 
@@ -95,8 +76,11 @@ def expand_with_skill_codes(df_output, df_competence, item_type_name, skill_code
                 old_col = f'力量カテゴリー名  ###[competence_category_name_{i}]###'
                 new_col = f'力量コード（カテゴリ名）{i}  ###[item_code_{i:02d}]###'
 
-                val = comp_row.get(old_col)
-                skill_row_dict[new_col] = val if pd.notna(val) else np.nan
+                if old_col in comp_row.index:
+                    val = comp_row[old_col]
+                    skill_row_dict[new_col] = val if pd.notna(val) else np.nan
+                else:
+                    skill_row_dict[new_col] = np.nan
 
             # 左から順に探して最初のNULLに力量コードを挿入
             for i in range(1, 21):
@@ -107,7 +91,7 @@ def expand_with_skill_codes(df_output, df_competence, item_type_name, skill_code
 
             results.append(skill_row_dict)
 
-    df_result = pd.DataFrame(results)
+    df_result = pd.DataFrame(results).drop(columns=["category_path"], errors="ignore")
 
     # カラムの順序を整理
     item_type_col = "アイテムタイプ  ###[item_type]###"
@@ -118,177 +102,251 @@ def expand_with_skill_codes(df_output, df_competence, item_type_name, skill_code
     return df_result[cols]
 
 
-# 【修正済み】process_skill_file: DataFrame読み込み後すぐに列名をクリーン
-def process_skill_file(file_content, df_competence_raw, item_type_name, skill_code_col):
+def process_skill_file(file_content, df_competence, item_type_name, skill_code_col):
     """スキル/教育/資格ファイルを処理してマップ行を生成"""
-    
-    # スキルファイル側の処理
     df_skill = pd.read_csv(file_content)
-    df_skill = clean_column_names(df_skill) # 列名をクリーン
     df_skill = split_competence_category(df_skill)
     df_skill, _ = build_category_path(df_skill)
-    
-    # 力量カテゴリファイル側の処理（コピーしてから処理）
-    df_competence_copy = df_competence_raw.copy()
-    # df_competence_copy = clean_column_names(df_competence_copy) # 呼び出し元で既にクリーン化
-    df_competence_copy = split_competence_category(df_competence_copy)
-    df_competence_copy, _ = build_category_path(df_competence_copy)
+    df_competence_copy, _ = build_category_path(df_competence.copy())
 
     return expand_with_skill_codes(df_skill, df_competence_copy, item_type_name, skill_code_col)
 
 
-# --- UI: ステップ1: 力量マップ情報を入力 ---
+def get_category_path(row, item_code_cols):
+    """行からカテゴリーパスを生成（NaN以外の値を＞で結合）"""
+    path_parts = []
+    for col in item_code_cols:
+        if col in row.index and pd.notna(row[col]) and str(row[col]).strip():
+            path_parts.append(str(row[col]).strip())
+    return "＞".join(path_parts)
+
+
+# -------------------------------
+# Streamlit UI
+# -------------------------------
+
+# ステップ1: 力量マップ情報入力
 st.header("📋 ステップ1: 力量マップ情報を入力")
+with st.form("map_info_form"):
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        主管プロジェクト = st.text_input(
+            "主管プロジェクト *", 
+            value="11_デモ_設備部",
+            help="必須項目です"
+        )
+        力量マップコード = st.text_input(
+            "力量マップコード *", 
+            value="GuRdXPEmx6y5EqcMeyKA",
+            help="必須項目です"
+        )
+    
+    with col2:
+        力量マップ名 = st.text_input(
+            "力量マップ名 *", 
+            value="デモ_力量マップ",
+            help="必須項目です"
+        )
+        フォルダ名 = st.text_input(
+            "フォルダ名", 
+            value="",
+            help="オプション項目です"
+        )
+    
+    submit_info = st.form_submit_button("✅ 情報を確定")
 
-col1, col2 = st.columns(2)
-with col1:
-    主管プロジェクト = st.text_input("主管プロジェクト", "11_デモ_設備部")
-    力量マップコード = st.text_input("力量マップコード", "GuRdXPEmx6y5EqcMeyKA")
-with col2:
-    力量マップ名 = st.text_input("力量マップ名", "デモ_力量マップ")
-    フォルダ名 = st.text_input("フォルダ名", "")
+if submit_info:
+    if not 主管プロジェクト.strip() or not 力量マップコード.strip() or not 力量マップ名.strip():
+        st.error("❌ 主管プロジェクト、力量マップコード、力量マップ名は必須項目です。")
+    else:
+        st.success("✅ 力量マップ情報の入力が完了しました")
+        st.session_state['map_info'] = {
+            '主管プロジェクト': 主管プロジェクト,
+            '力量マップコード': 力量マップコード,
+            '力量マップ名': 力量マップ名,
+            'フォルダ名': フォルダ名
+        }
 
+st.markdown("---")
 
-# --- UI: ステップ2: 力量カテゴリCSVファイルをアップロード ---
-st.header("📁 ステップ2: 力量カテゴリCSVファイルをアップロード (必須)")
-uploaded_competence = st.file_uploader(
-    "competence_category.csvを選択", 
-    type=["csv"], 
-    key="comp_uploader"
+# ステップ2: 力量カテゴリCSVアップロード
+st.header("📁 ステップ2: 力量カテゴリCSVファイルをアップロード")
+competence_file = st.file_uploader(
+    "力量カテゴリCSVファイルを選択 (必須)",
+    type=['csv'],
+    key='competence'
 )
 
-
-# --- UI: ステップ3: 力量CSVファイルをアップロード ---
-st.header("📁 ステップ3: 力量CSVファイルをアップロード (いずれか1つ以上必須)")
-
-uploaded_skill = st.file_uploader("力量（スキル）CSV", type=["csv"], key="skill_uploader")
-uploaded_education = st.file_uploader("力量（教育）CSV", type=["csv"], key="edu_uploader")
-uploaded_license = st.file_uploader("力量（資格）CSV", type=["csv"], key="lic_uploader")
-
-# --- UI: ステップ4: 実行ボタン ---
-st.markdown("---")
-if st.button("⚙️ データ処理を実行", type="primary"):
-    # 必須入力チェック
-    if not all([主管プロジェクト.strip(), 力量マップコード.strip(), 力量マップ名.strip(), uploaded_competence]):
-        st.error("❌ 主管プロジェクト、力量マップコード、力量マップ名、および力量カテゴリファイルのアップロードは必須です。")
-        st.stop()
+if competence_file:
+    try:
+        df_competence = pd.read_csv(competence_file)
+        st.success(f"✅ 力量カテゴリファイル読み込み完了: {len(df_competence)}行")
+        st.session_state['df_competence'] = df_competence
         
-    uploaded_files = {
-        'skill': uploaded_skill,
-        'education': uploaded_education,
-        'license': uploaded_license
-    }
-    if all(f is None for f in uploaded_files.values()):
-        st.error("❌ 力量（スキル/教育/資格）のいずれか1つ以上のCSVファイルをアップロードしてください。")
-        st.stop()
+        with st.expander("📊 データプレビュー"):
+            st.dataframe(df_competence.head(10))
+    except Exception as e:
+        st.error(f"❌ ファイル読み込みエラー: {e}")
 
-    # ローディングスピナー表示
-    with st.spinner('⏳ データ処理中...'):
+st.markdown("---")
+
+# ステップ3: 力量CSVファイルアップロード
+st.header("📁 ステップ3: 力量CSVファイルをアップロード")
+st.info("スキル/教育/資格のいずれか1つ以上をアップロードしてください")
+
+col1, col2, col3 = st.columns(3)
+
+with col1:
+    st.subheader("力量（スキル）")
+    skill_file = st.file_uploader("スキルCSV", type=['csv'], key='skill')
+    if skill_file:
+        st.success("✅ アップロード完了")
+
+with col2:
+    st.subheader("力量（教育）")
+    education_file = st.file_uploader("教育CSV", type=['csv'], key='education')
+    if education_file:
+        st.success("✅ アップロード完了")
+
+with col3:
+    st.subheader("力量（資格）")
+    license_file = st.file_uploader("資格CSV", type=['csv'], key='license')
+    if license_file:
+        st.success("✅ アップロード完了")
+
+st.markdown("---")
+
+# ステップ4: データ処理実行
+st.header("⚙️ ステップ4: データ処理を実行")
+
+if st.button("🚀 処理を開始", type="primary", use_container_width=True):
+    # 必須項目チェック
+    if 'map_info' not in st.session_state:
+        st.error("❌ ステップ1の力量マップ情報を先に入力・確定してください")
+    elif 'df_competence' not in st.session_state:
+        st.error("❌ ステップ2の力量カテゴリCSVをアップロードしてください")
+    elif not skill_file and not education_file and not license_file:
+        st.error("❌ ステップ3で力量（スキル/教育/資格）のいずれか1つ以上をアップロードしてください")
+    else:
         try:
-            # 力量カテゴリファイルの読み込みと列名のクリーンアップ
-            df_competence_raw = pd.read_csv(uploaded_competence)
-            df_competence_raw = clean_column_names(df_competence_raw) # 読み込み直後にクリーンアップ
-
-            # 各ファイルを処理
-            all_results = []
-            file_configs = [
-                ('skill', "SKILL", "力量コード  ###[skill_code]###"),
-                ('education', "EDUCATION", "力量コード  ###[education_code]###"),
-                ('license', "LICENSE", "力量コード  ###[license_code]###")
-            ]
-
-            for file_key, item_type, code_col in file_configs:
-                file_content = uploaded_files[file_key]
-                if file_content is not None:
-                    # 力量ファイル側のDataFrameも読み込み直後に列名をクリーンアップ
-                    df_result = process_skill_file(file_content, df_competence_raw, item_type, code_col)
+            with st.spinner("⏳ データ処理中..."):
+                # 処理開始
+                map_info = st.session_state['map_info']
+                df_competence = st.session_state['df_competence']
+                
+                all_results = []
+                file_configs = [
+                    (skill_file, "SKILL", "力量コード  ###[skill_code]###"),
+                    (education_file, "EDUCATION", "力量コード  ###[education_code]###"),
+                    (license_file, "LICENSE", "力量コード  ###[license_code]###")
+                ]
+                
+                progress_bar = st.progress(0)
+                status_text = st.empty()
+                
+                for idx, (file, item_type, code_col) in enumerate(file_configs):
+                    if file is None:
+                        continue
+                    
+                    status_text.text(f"処理中: {item_type}...")
+                    df_result = process_skill_file(io.BytesIO(file.getvalue()), df_competence, item_type, code_col)
+                    
+                    type_counts = df_result['アイテムタイプ  ###[item_type]###'].value_counts()
+                    st.info(f"✓ {item_type}ファイル処理完了: {len(df_result)}行生成")
+                    
                     all_results.append(df_result)
-                else:
-                    st.info(f"⊘ {item_type}ファイル: スキップ（未アップロード）")
-
-            # 結果を統合
-            if not all_results:
-                st.error("処理する力量データがありませんでした。")
-                st.stop()
-
-            final_df = pd.concat(all_results, ignore_index=True)
-
-            # --- 既存のソートと重複削除ロジック ---
-            item_code_cols = [f'力量コード（カテゴリ名）{i}  ###[item_code_{i:02d}]###' for i in range(1, 21)]
-
-            def get_category_path(row):
-                path_parts = []
-                for col in item_code_cols:
-                    if col in row.index and pd.notna(row[col]) and str(row[col]).strip():
-                        path_parts.append(str(row[col]).strip())
-                return "＞".join(path_parts)
-
-            final_df["_sort_path"] = final_df.apply(get_category_path, axis=1)
-            item_type_order = {"CATEGORY_IN_MAP": 0, "SKILL": 1, "EDUCATION": 2, "LICENSE": 3}
-            final_df["_item_type_order"] = final_df["アイテムタイプ  ###[item_type]###"].map(lambda x: item_type_order.get(x, 99))
-            final_df = final_df.sort_values(by=["_sort_path", "_item_type_order"], ascending=[True, True]).reset_index(drop=True)
-
-            # 重複するCATEGORY_IN_MAP行を削除
-            seen_category_paths = set()
-            rows_to_keep = []
-            for idx, row in final_df.iterrows():
-                if row["アイテムタイプ  ###[item_type]###"] == "CATEGORY_IN_MAP":
-                    category_path = row["_sort_path"]
-                    if category_path not in seen_category_paths:
-                        seen_category_paths.add(category_path)
+                    progress_bar.progress((idx + 1) / 3)
+                
+                status_text.text("結果を統合中...")
+                
+                # 結果を統合
+                final_df = pd.concat(all_results, ignore_index=True)
+                
+                # ソート処理
+                item_code_cols = [f'力量コード（カテゴリ名）{i}  ###[item_code_{i:02d}]###' for i in range(1, 21)]
+                final_df["_sort_path"] = final_df.apply(lambda row: get_category_path(row, item_code_cols), axis=1)
+                
+                item_type_order = {"CATEGORY_IN_MAP": 0, "SKILL": 1, "EDUCATION": 2, "LICENSE": 3}
+                final_df["_item_type_order"] = final_df["アイテムタイプ  ###[item_type]###"].map(
+                    lambda x: item_type_order.get(x, 99)
+                )
+                
+                final_df = final_df.sort_values(
+                    by=["_sort_path", "_item_type_order"],
+                    ascending=[True, True]
+                ).reset_index(drop=True)
+                
+                # 重複削除
+                seen_category_paths = set()
+                rows_to_keep = []
+                
+                for idx, row in final_df.iterrows():
+                    if row["アイテムタイプ  ###[item_type]###"] == "CATEGORY_IN_MAP":
+                        category_path = row["_sort_path"]
+                        if category_path not in seen_category_paths:
+                            seen_category_paths.add(category_path)
+                            rows_to_keep.append(idx)
+                    else:
                         rows_to_keep.append(idx)
-                else:
-                    rows_to_keep.append(idx)
-            
-            final_df = final_df.loc[rows_to_keep].reset_index(drop=True)
-            final_df = final_df.drop(columns=["_sort_path", "_item_type_order"])
-
-            # --- 追加カラムの設定 ---
-            additional_cols = [
-                "主管プロジェクト  ###[principal_project_name]###",
-                "力量マップコード  ###[competence_map_code]###",
-                "力量マップ名",
-                "フォルダ名",
-                "必要レベル(以上)  ###[required_competence_level_label]###",
-                "必要人数  ###[required_head_count]###"
-            ]
-            for col in additional_cols:
-                if col not in final_df.columns:
-                    final_df[col] = ""
-
-            final_df["主管プロジェクト  ###[principal_project_name]###"] = 主管プロジェクト.strip()
-            final_df["力量マップコード  ###[competence_map_code]###"] = 力量マップコード.strip()
-            final_df["力量マップ名"] = 力量マップ名.strip()
-            final_df["フォルダ名"] = フォルダ名.strip()
-
-            final_df = final_df[additional_cols + [c for c in final_df.columns if c not in additional_cols]]
-            
-            # 処理結果をセッションステートに保存
-            st.session_state['final_df'] = final_df
-            
-            st.success(f"✅ 処理完了！最終結果: {len(final_df)}行")
-
+                
+                final_df = final_df.loc[rows_to_keep].reset_index(drop=True)
+                final_df = final_df.drop(columns=["_sort_path", "_item_type_order"])
+                
+                # 追加カラム設定
+                additional_cols = [
+                    "主管プロジェクト  ###[principal_project_name]###",
+                    "力量マップコード  ###[competence_map_code]###",
+                    "力量マップ名",
+                    "フォルダ名",
+                    "必要レベル(以上)  ###[required_competence_level_label]###",
+                    "必要人数  ###[required_head_count]###"
+                ]
+                
+                for col in additional_cols:
+                    if col not in final_df.columns:
+                        final_df[col] = ""
+                
+                final_df["主管プロジェクト  ###[principal_project_name]###"] = map_info['主管プロジェクト']
+                final_df["力量マップコード  ###[competence_map_code]###"] = map_info['力量マップコード']
+                final_df["力量マップ名"] = map_info['力量マップ名']
+                final_df["フォルダ名"] = map_info['フォルダ名']
+                
+                final_df = final_df[additional_cols + [c for c in final_df.columns if c not in additional_cols]]
+                
+                progress_bar.progress(100)
+                status_text.empty()
+                
+                # 結果表示
+                st.success("✅ 処理完了！")
+                st.info(f"📊 最終結果: {len(final_df)}行")
+                
+                with st.expander("📊 結果プレビュー（最初の50行）"):
+                    st.dataframe(final_df.head(50))
+                
+                # ダウンロードボタン
+                csv_buffer = io.StringIO()
+                final_df.to_csv(csv_buffer, index=False, encoding="utf-8-sig")
+                csv_data = csv_buffer.getvalue()
+                
+                st.download_button(
+                    label="📥 CSVファイルをダウンロード",
+                    data=csv_data,
+                    file_name="competence_map_related_item_for_map.csv",
+                    mime="text/csv",
+                    use_container_width=True
+                )
+                
         except Exception as e:
-            st.error(f"⚠️ 処理中にエラーが発生しました: {e}")
+            st.error(f"❌ 処理エラー: {e}")
             st.exception(e)
 
-
-# --- 結果のダウンロードと表示 ---
+# フッター
 st.markdown("---")
-if not st.session_state['final_df'].empty:
-    st.subheader("📥 結果ファイルのダウンロード")
-    
-    # CSVに変換（BytesIOを使用するとファイルサイズを節約できる）
-    csv_buffer = BytesIO()
-    st.session_state['final_df'].to_csv(csv_buffer, index=False, encoding="utf-8-sig")
-    csv_data = csv_buffer.getvalue()
-
-    st.download_button(
-        label="🚀 competence_map_related_item_for_map.csv をダウンロード",
-        data=csv_data,
-        file_name="competence_map_related_item_for_map.csv",
-        mime="text/csv"
-    )
-
-    st.subheader("📑 結果プレビュー (先頭5行)")
-    st.dataframe(st.session_state['final_df'].head())
+st.markdown("**📌 使い方:**")
+st.markdown("""
+1. ステップ1で力量マップの基本情報を入力し「情報を確定」ボタンをクリック
+2. ステップ2で力量カテゴリCSVファイルをアップロード
+3. ステップ3で力量（スキル/教育/資格）のCSVファイルを1つ以上アップロード
+4. ステップ4で「処理を開始」ボタンをクリックして結果をダウンロード
+""")
