@@ -1,4 +1,4 @@
-# app.py
+# app.py (修正後の完全版)
 
 import streamlit as st
 import pandas as pd
@@ -15,11 +15,28 @@ if 'final_df' not in st.session_state:
 
 
 # --- データ処理関数 (既存のロジックをそのまま移植) ---
+
+# 【重要修正点】列名から不要な空白を取り除き、処理の堅牢性を高める関数
+def clean_column_names(df):
+    """DataFrameの列名から前後の空白（全角/半角）を取り除く"""
+    df.columns = df.columns.str.strip()
+    return df
+
+# 【修正済み】split_competence_category: 列名の前後の空白を削除
 def split_competence_category(df):
     """力量カテゴリーを「＞」で分割して20列に展開"""
+    
+    # 既存のロジックから、df['力量カテゴリー']の再代入を削除し、NaNを空文字列に変換する処理を簡略化
+    
+    # KeyError対策: まず列名のクリーニングを試みる
+    df = clean_column_names(df)
+    
+    # '力量カテゴリー'が存在するか確認（存在しない場合はエラーを出すが、列名クリーニングで大半は解決するはず）
+    if '力量カテゴリー' not in df.columns:
+        raise KeyError("アップロードされたCSVに '力量カテゴリー' という列が見つかりません。列名を正確に確認してください。")
+
     # NaNを一時的に空文字列に変換してsplitを適用
-    df['力量カテゴリー'] = df['力量カテゴリー'].astype(str).str.strip()
-    split_data = df['力量カテゴリー'].str.split('＞', expand=True)
+    split_data = df['力量カテゴリー'].astype(str).str.strip().str.split('＞', expand=True)
 
     if split_data.shape[1] > 20:
         split_data = split_data.iloc[:, :20]
@@ -33,10 +50,7 @@ def split_competence_category(df):
 
     split_data.columns = [f'力量カテゴリー名  ###[competence_category_name_{i}]###' for i in range(1, 21)]
 
-    # 元の df に結合する前に、元の df に'力量カテゴリー'のカラムが残っているか確認（Colab版と挙動を合わせるため）
-    if '力量カテゴリー' not in df.columns:
-         df['力量カテゴリー'] = split_data.apply(lambda row: "＞".join(row.dropna().astype(str)), axis=1)
-
+    # 力量カテゴリーのカラムが元のdfにあることを前提として、結合する
     return pd.concat([df.reset_index(drop=True), split_data.reset_index(drop=True)], axis=1)
 
 
@@ -56,8 +70,6 @@ def build_category_path(df):
 def expand_with_skill_codes(df_output, df_competence, item_type_name, skill_code_col):
     """力量カテゴリーと力量コードを統合してマップ行を生成"""
     results = []
-    
-    # 既存のカテゴリーパスを先に作成（df_competenceはすでにパスを持っている前提）
 
     for _, comp_row in df_competence.iterrows():
         comp_path = comp_row["category_path"]
@@ -106,15 +118,19 @@ def expand_with_skill_codes(df_output, df_competence, item_type_name, skill_code
     return df_result[cols]
 
 
-def process_skill_file(file_content, df_competence, item_type_name, skill_code_col):
+# 【修正済み】process_skill_file: DataFrame読み込み後すぐに列名をクリーン
+def process_skill_file(file_content, df_competence_raw, item_type_name, skill_code_col):
     """スキル/教育/資格ファイルを処理してマップ行を生成"""
-    # StreamlitのファイルアップローダーはBytesIOライクなオブジェクトを返すため、そのまま使用
+    
+    # スキルファイル側の処理
     df_skill = pd.read_csv(file_content)
+    df_skill = clean_column_names(df_skill) # 列名をクリーン
     df_skill = split_competence_category(df_skill)
     df_skill, _ = build_category_path(df_skill)
     
-    # df_competenceも処理が必要
-    df_competence_copy = df_competence.copy()
+    # 力量カテゴリファイル側の処理（コピーしてから処理）
+    df_competence_copy = df_competence_raw.copy()
+    # df_competence_copy = clean_column_names(df_competence_copy) # 呼び出し元で既にクリーン化
     df_competence_copy = split_competence_category(df_competence_copy)
     df_competence_copy, _ = build_category_path(df_competence_copy)
 
@@ -169,8 +185,9 @@ if st.button("⚙️ データ処理を実行", type="primary"):
     # ローディングスピナー表示
     with st.spinner('⏳ データ処理中...'):
         try:
-            # 力量カテゴリファイルの読み込み
-            df_competence = pd.read_csv(uploaded_competence)
+            # 力量カテゴリファイルの読み込みと列名のクリーンアップ
+            df_competence_raw = pd.read_csv(uploaded_competence)
+            df_competence_raw = clean_column_names(df_competence_raw) # 読み込み直後にクリーンアップ
 
             # 各ファイルを処理
             all_results = []
@@ -183,7 +200,8 @@ if st.button("⚙️ データ処理を実行", type="primary"):
             for file_key, item_type, code_col in file_configs:
                 file_content = uploaded_files[file_key]
                 if file_content is not None:
-                    df_result = process_skill_file(file_content, df_competence, item_type, code_col)
+                    # 力量ファイル側のDataFrameも読み込み直後に列名をクリーンアップ
+                    df_result = process_skill_file(file_content, df_competence_raw, item_type, code_col)
                     all_results.append(df_result)
                 else:
                     st.info(f"⊘ {item_type}ファイル: スキップ（未アップロード）")
