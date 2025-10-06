@@ -325,7 +325,8 @@ if st.button("🚀 処理を開始", type="primary", use_container_width=True):
                     st.dataframe(final_df.head(50))
                 
                 # ダウンロードボタン
-                csv_buffer = io.StringIO()
+                # BytesIOを使用してUTF-8 BOM付きCSVを生成
+                csv_buffer = io.BytesIO()
                 final_df.to_csv(csv_buffer, index=False, encoding="utf-8-sig")
                 csv_data = csv_buffer.getvalue()
                 
