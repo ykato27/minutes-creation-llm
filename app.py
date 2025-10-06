@@ -11,7 +11,15 @@ st.set_page_config(
 )
 
 # タイトル
+
 st.title("📊 力量マップCSV生成ツール")
+st.markdown("**📌 使い方:**")
+st.markdown("""
+1. ステップ1で力量マップの基本情報を入力し「情報を確定」ボタンをクリック
+2. ステップ2で力量カテゴリCSVファイルをアップロード
+3. ステップ3で力量（スキル/教育/資格）のCSVファイルを1つ以上アップロード
+4. ステップ4で「処理を開始」ボタンをクリックして結果をダウンロード
+""")
 st.markdown("---")
 
 # -------------------------------
@@ -133,12 +141,12 @@ with st.form("map_info_form"):
     with col1:
         主管プロジェクト = st.text_input(
             "主管プロジェクト *", 
-            value="11_デモ_設備部",
+            value="01_デモ_製造部",
             help="必須項目です"
         )
         力量マップコード = st.text_input(
             "力量マップコード *", 
-            value="GuRdXPEmx6y5EqcMeyKA",
+            value="XXXXXXXXXXXXXXXXX",
             help="必須項目です"
         )
     
@@ -342,12 +350,3 @@ if st.button("🚀 処理を開始", type="primary", use_container_width=True):
             st.error(f"❌ 処理エラー: {e}")
             st.exception(e)
 
-# フッター
-st.markdown("---")
-st.markdown("**📌 使い方:**")
-st.markdown("""
-1. ステップ1で力量マップの基本情報を入力し「情報を確定」ボタンをクリック
-2. ステップ2で力量カテゴリCSVファイルをアップロード
-3. ステップ3で力量（スキル/教育/資格）のCSVファイルを1つ以上アップロード
-4. ステップ4で「処理を開始」ボタンをクリックして結果をダウンロード
-""")
